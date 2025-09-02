@@ -1,0 +1,29 @@
+{
+  "type": "module",
+  "name": "panshi",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node -r dotenv/config ./src/server",
+    "dev": "npx nodemon -r dotenv/config ./src/server"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "aes-js": "^3.1.2",
+    "axios": "^1.6.8",
+    "ccxt": "^4.3.42",
+    "chalk": "^5.3.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-oauth2-jwt-bearer": "^1.6.0",
+    "helmet": "^7.1.0",
+    "pm2": "^5.4.2",
+    "redis": "^4.6.13",
+    "redis-om": "^0.4.3",
+    "ws": "^8.17.0"
+  }
+}
