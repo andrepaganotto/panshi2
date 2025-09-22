@@ -211,13 +211,17 @@ async function fetchOrder(exchange, id, symbol) {
             return order;
         }
         catch (error) {
-            if (isNetworkError(error))
+            // IMPORTANT: do NOT treat ORDER_NOT_FOUND as network error – bubble it up so operate() can recreate.
+            if (error instanceof ccxt.OrderNotFound) throw error;
+
+            if (isNetworkError(error)) {
                 if (retries < maxRetries) {
                     retries++;
                     retries < 4 ? await delay(3000) : await delay(15000);
                     return false;
                 }
                 else throw error;
+            }
             else throw error;
         }
     }
@@ -229,6 +233,9 @@ async function fetchOrder(exchange, id, symbol) {
             else settings.LOGS.botSys && console.log(`${new Date().toLocaleTimeString()} (${chalk.yellowBright(`${exchange} | ${symbol}`)}) is retrying a request on ${chalk.green('fetchOrder()')}, attempt: ${retries}/${maxRetries}`);
         }
         catch (error) {
+            // If it's an ORDER_NOT_FOUND, let the caller handle (we recreate there).
+            if (error instanceof ccxt.OrderNotFound) throw error;
+
             reportError(`fetchOrder() (${exchange} | ${symbol}) [${error.constructor?.name || 'Unknown error'}]: ${error.message || error}`);
             return false;
         }
@@ -429,7 +436,26 @@ async function operate(automation, operation) {
     }
 
     //1st request, used to check the order status
-    let order = await fetchOrder(exchangeA, orderId, symbolA);
+    let order;
+    try {
+        order = await fetchOrder(exchangeA, orderId, symbolA);
+    } catch (error) {
+        if (error instanceof ccxt.OrderNotFound) {
+            // Special handling: recreate the same order instead of retrying fetch 15x
+            settings.LOGS.botOps && console.log(chalk.bgYellowBright.black(`${new Date().toLocaleTimeString()} (${symbolA} | ${side} | ${spread}) ORDER NOT FOUND. Recriando ordem...`));
+            reportError(`[1ª tentativa] - (${symbolA} | ${side}) ORDER NOT FOUND. Recriando ordem...`, 'warning');
+
+            operation.orderId = await createOrder(exchangeA, symbolA, side, operation.remaining, operation.lastPrice, spread, operation.minPrice);
+            wss.broadcast({ type: 'automation', data: automation });
+
+            if (!operation.orderId) return pauseOperation('Não foi possível recriar a ordem (1ª tentativa)');
+
+            if (automations[id]) await repository.updateAutomation(automation);
+            return;
+        }
+        // Any other unexpected error -> pause
+        return pauseOperation('Não foi possível obter dados da ordem (1ª tentativa)');
+    }
     if (!order) return pauseOperation('Não foi possível obter dados da ordem (1ª tentativa)');
 
     //Order was manually canceled by the user in the exchange interface, operation gets paused.
@@ -458,7 +484,24 @@ async function operate(automation, operation) {
         }
         else {
             //3rd request, another status checking to also make sure the order was not partially filled in the meantime while trying to cancel the order
-            order = await fetchOrder(exchangeA, orderId, symbolA);
+            try {
+                order = await fetchOrder(exchangeA, orderId, symbolA);
+            } catch (error) {
+                if (error instanceof ccxt.OrderNotFound) {
+                    // Again: treat as missing on exchange -> recreate the order with same data
+                    settings.LOGS.botOps && console.log(chalk.bgYellowBright.black(`${new Date().toLocaleTimeString()} (${symbolA} | ${side} | ${spread}) ORDER NOT FOUND after cancel check. Recreating with same params...`));
+                    reportError(`[2ª tentativa] - (${symbolA} | ${side}) ORDER NOT FOUND. Recriando ordem...`, 'warning');
+
+                    operation.orderId = await createOrder(exchangeA, symbolA, side, operation.remaining, operation.lastPrice, spread, operation.minPrice);
+                    wss.broadcast({ type: 'automation', data: automation });
+
+                    if (!operation.orderId) return pauseOperation('Não foi possível recriar a ordem (2ª tentativa)');
+
+                    if (automations[id]) await repository.updateAutomation(automation);
+                    return;
+                }
+                return pauseOperation('Não foi possível obter dados da ordem (2ª tentativa)');
+            }
             if (!order) return pauseOperation('Não foi possível obter dados da ordem (2ª tentativa)');
         }
     }
@@ -665,7 +708,7 @@ function startAutomation(automation) {
 
         if (!operation.waitingAmount) operation.waitingAmount = 0; //If a trade is not possible because of minimum amount, it will store the amount here
         if (!operation.fixedMinPrice) operation.minPrice = false; //This is the minimum price the bot will accept to place the order
-        if (!operation.executionSpread) operation.executionSpread = false; 
+        if (!operation.executionSpread) operation.executionSpread = false;
         if (operation.executionSpread || !operation.executionPrice) operation.executionPrice = false;
 
         operation.allowGoingBack = debounce(function () {
